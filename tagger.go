@@ -1,4 +1,4 @@
-package pivotaltracker_story_tagger
+package pivotal_tracker_story_tagger
 import (
 	"os"
 	"fmt"
