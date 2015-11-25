@@ -10,6 +10,8 @@ import (
 	"time"
     "regexp"
     "strconv"
+    "io"
+    "bytes"
 )
 
 type Message struct {
@@ -43,6 +45,30 @@ func getPivotalTrackerEnvVariables() (projectId, apiToken, storyPrefix string) {
 	return
 }
 
+func makeRequest(client *http.Client, url string, method string, apiToken string, data io.Reader) (contents []byte, err error) {
+    req, err := http.NewRequest(method, url, data)
+    if err != nil {
+        fmt.Println("[ERROR]:", err)
+        os.Exit(1)
+    }
+    req.Header.Set("Content-Type", "application/json")
+    req.Header.Set("X-TrackerToken", apiToken)
+
+    res, err := client.Do(req)
+    defer res.Body.Close()
+    if err != nil {
+        fmt.Println("[ERROR]:", err)
+        os.Exit(1)
+    }
+
+    contents, err = ioutil.ReadAll(res.Body)
+    if err != nil {
+        fmt.Println("[ERROR]:", err)
+        os.Exit(1)
+    }
+    return
+}
+
 func main() {
 	const (
 		PIVOTAL_TRACKER_API = "https://www.pivotaltracker.com/services/v5/projects/"
@@ -65,35 +91,24 @@ func main() {
 
 	for i := 0; i < PAGES; i++ {
 		listUrl := baseUrl + "stories?limit=" + strconv.Itoa(RESULTS_PER_PAGE) + "&offset=" + strconv.Itoa(RESULTS_PER_PAGE * i)
-		listReq, err := http.NewRequest("GET", listUrl, nil)
-		if err != nil {
-			fmt.Println("[ERROR]:", err)
-			os.Exit(1)
-		}
-		listReq.Header.Set("X-TrackerToken", apiToken)
 
-		res, err := client.Do(listReq)
-		defer res.Body.Close()
+		contents, err := makeRequest(client, listUrl, "GET", apiToken, nil)
 		if err != nil {
 			fmt.Println("[ERROR]:", err)
 			os.Exit(1)
 		}
 
-		contents, err := ioutil.ReadAll(res.Body)
+        var storiesFromJson Messages
+        err = json.Unmarshal(contents, &storiesFromJson)
 		if err != nil {
 			fmt.Println("[ERROR]:", err)
 			os.Exit(1)
 		}
-
-		err = json.Unmarshal(contents, &stories)
-		if err != nil {
-			fmt.Println("[ERROR]:", err)
-			os.Exit(1)
-		}
+        stories = append(stories, storiesFromJson...)
 	}
 
-	sort.Sort(stories)
-    regex := "/" + storyPrefix + "(\\d+)/"
+    sort.Sort(stories)
+    regex := "" + storyPrefix + "(\\d+)"
     re, err := regexp.Compile(regex)
     if err != nil {
         fmt.Println("[ERROR]:", err)
@@ -102,15 +117,13 @@ func main() {
 
 	var newlyTaggedStoryCount, maxSeenStoryId int
 
-	fmt.Println("Number of stories found:", len(stories))
     for _, story := range stories {
-//		pivotalId := story.Id
+		pivotalId := story.Id
 		storyName := story.Name
 
 		matches := re.FindStringSubmatch(storyName)
-        fmt.Printf("Matches found %d", len(matches))
         if len(matches) > 0 {
-            stringyStoryId := matches[0]
+            stringyStoryId := matches[1]
             storyId, err := strconv.Atoi(stringyStoryId)
             if err != nil {
                 fmt.Println("[ERROR]:", err)
@@ -119,29 +132,30 @@ func main() {
             if maxSeenStoryId < storyId {
                 maxSeenStoryId = storyId
             }
-            fmt.Println("Skipping story with existing ID: #%s", storyName)
+            fmt.Println("Skipping story with existing ID:", storyName)
+            continue
         }
 
         newlyTaggedStoryCount += 1
         maxSeenStoryId += 1
 
-        newStoryName := "#" + storyPrefix + "#" + string(maxSeenStoryId) +" - #" + string(maxSeenStoryId)
+        newStoryName := storyPrefix + strconv.Itoa(maxSeenStoryId) +" - " + storyName
         fmt.Println("Adding new ID to story:", newStoryName)
 
-//        updateUrl := PIVOTAL_TRACKER_API + "stories/#" + string(pivotalId)
-//        addReq, err := http.NewRequest("PUT", updateUrl, nil)
-//        if err != nil {
-//            fmt.Println("[ERROR]:", err)
-//            os.Exit(1)
-//        }
-//        addReq.Header.Set("X-TrackerToken", apiToken)
-//
-//        res, err := client.Do(addReq)
-//        defer res.Body.Close()
-//        if err != nil {
-//            fmt.Println("[ERROR]:", err)
-//            os.Exit(1)
-//        }
+        updateUrl := baseUrl + "stories/" + strconv.Itoa(pivotalId)
+        putData := &OutboundMessage{name:newStoryName}
+        b, err := json.Marshal(putData)
+        if err != nil {
+            fmt.Println("[ERROR]:", err)
+            os.Exit(1)
+        }
+
+        contents, err := makeRequest(client, updateUrl, "PUT", apiToken, bytes.NewBuffer(b))
+        if err != nil {
+            fmt.Println("[ERROR]:", err)
+            os.Exit(1)
+        }
+        fmt.Println(string(contents))
 	}
 
 //	sorted_stories.each do |s|
