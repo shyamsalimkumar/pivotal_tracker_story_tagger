@@ -1,19 +1,21 @@
-package pivotal_tracker_story_tagger
+package main
 import (
 	"os"
 	"fmt"
 	"net/http"
 
-	"github.com/simplereach/timeutils"
 	"io/ioutil"
 	"encoding/json"
 	"sort"
+	"time"
+    "regexp"
+    "strconv"
 )
 
 type Message struct {
-	Id string `json:"id"`
+	Id int `json:"id"`
 	Name string `json:"name"`
-	CreatedAt timeutils.Time `json:"created_at"`
+	CreatedAt time.Time `json:"created_at"`
 }
 
 type Messages []Message
@@ -23,11 +25,15 @@ func (slice Messages) Len() int {
 }
 
 func (slice Messages) Less(i, j int) bool {
-	return slice[i].CreatedAt < slice[j].CreatedAt;
+	return slice[i].CreatedAt.Before(slice[j].CreatedAt);
 }
 
 func (slice Messages) Swap(i, j int) {
 	slice[i], slice[j] = slice[j], slice[i]
+}
+
+type OutboundMessage struct {
+    name string
 }
 
 func getPivotalTrackerEnvVariables() (projectId, apiToken, storyPrefix string) {
@@ -55,51 +61,89 @@ func main() {
 	}
 
 	client := &http.Client{}
-	baseUrl := PIVOTAL_TRACKER_API + projectId
+	baseUrl := PIVOTAL_TRACKER_API + projectId + "/"
 
 	for i := 0; i < PAGES; i++ {
-		url := baseUrl + "stories?limit=" + string(RESULTS_PER_PAGE) + "&offset=" + string(RESULTS_PER_PAGE * i)
-		req, err := http.NewRequest("GET", url, nil)
+		listUrl := baseUrl + "stories?limit=" + strconv.Itoa(RESULTS_PER_PAGE) + "&offset=" + strconv.Itoa(RESULTS_PER_PAGE * i)
+		listReq, err := http.NewRequest("GET", listUrl, nil)
 		if err != nil {
-			fmt.Println("[ERROR]: %s", err)
+			fmt.Println("[ERROR]:", err)
 			os.Exit(1)
 		}
-		req.Header.Set("X-TrackerToken", apiToken)
+		listReq.Header.Set("X-TrackerToken", apiToken)
 
-		res, err := client.Do(req)
+		res, err := client.Do(listReq)
+		defer res.Body.Close()
 		if err != nil {
-			fmt.Println("[ERROR]: %s", err)
-			os.Exit(1)
-		}
-
-		contents, err := ioutil.ReadAll(res)
-		if err != nil {
-			fmt.Println("[ERROR]: %s", err)
+			fmt.Println("[ERROR]:", err)
 			os.Exit(1)
 		}
 
-		var parsedJSON Message
-		err = json.Unmarshal(contents, &parsedJSON)
+		contents, err := ioutil.ReadAll(res.Body)
 		if err != nil {
-			fmt.Println("[ERROR]: %s", err)
+			fmt.Println("[ERROR]:", err)
 			os.Exit(1)
 		}
 
-		stories[i] = parsedJSON
+		err = json.Unmarshal(contents, &stories)
+		if err != nil {
+			fmt.Println("[ERROR]:", err)
+			os.Exit(1)
+		}
 	}
 
-//	sorted_stories = stories.sort_by {|s| [s["id"], DateTime.iso8601(s["created_at"])]}
-//	sort.Sort(stories)
-//
-//	var newlyTaggedStoryCount, maxSeenStoryId int
-//
-//	for story := range stories {
+	sort.Sort(stories)
+    regex := "/" + storyPrefix + "(\\d+)/"
+    re, err := regexp.Compile(regex)
+    if err != nil {
+        fmt.Println("[ERROR]:", err)
+        os.Exit(1)
+    }
+
+	var newlyTaggedStoryCount, maxSeenStoryId int
+
+	fmt.Println("Number of stories found:", len(stories))
+    for _, story := range stories {
 //		pivotalId := story.Id
-//		storyName := story.Name
+		storyName := story.Name
+
+		matches := re.FindStringSubmatch(storyName)
+        fmt.Printf("Matches found %d", len(matches))
+        if len(matches) > 0 {
+            stringyStoryId := matches[0]
+            storyId, err := strconv.Atoi(stringyStoryId)
+            if err != nil {
+                fmt.Println("[ERROR]:", err)
+                os.Exit(1)
+            }
+            if maxSeenStoryId < storyId {
+                maxSeenStoryId = storyId
+            }
+            fmt.Println("Skipping story with existing ID: #%s", storyName)
+        }
+
+        newlyTaggedStoryCount += 1
+        maxSeenStoryId += 1
+
+        newStoryName := "#" + storyPrefix + "#" + string(maxSeenStoryId) +" - #" + string(maxSeenStoryId)
+        fmt.Println("Adding new ID to story:", newStoryName)
+
+//        updateUrl := PIVOTAL_TRACKER_API + "stories/#" + string(pivotalId)
+//        addReq, err := http.NewRequest("PUT", updateUrl, nil)
+//        if err != nil {
+//            fmt.Println("[ERROR]:", err)
+//            os.Exit(1)
+//        }
+//        addReq.Header.Set("X-TrackerToken", apiToken)
 //
-//		stringyStoryId := story
-//	}
-//
+//        res, err := client.Do(addReq)
+//        defer res.Body.Close()
+//        if err != nil {
+//            fmt.Println("[ERROR]:", err)
+//            os.Exit(1)
+//        }
+	}
+
 //	sorted_stories.each do |s|
 //	pivotal_id = s["id"]
 //	story_name = s["name"]
@@ -122,5 +166,5 @@ func main() {
 //	end
 //
 //	log.info "Tagged #{newly_tagged_story_count} new stories out of #{sorted_stories.length} total."
-	fmt.Println("Tagged %d new stories out of %d", newlyTaggedStoryCount, len(stories))
+	fmt.Printf("Tagged %d new stories out of %d total", newlyTaggedStoryCount, len(stories))
 }
