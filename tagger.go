@@ -34,7 +34,7 @@ func (slice Messages) Swap(i, j int) {
 }
 
 type OutboundMessage struct {
-    name string
+    Name string `json:"name,omitempty"`
 }
 
 func getPivotalTrackerEnvVariables() (projectId, apiToken, storyPrefix string) {
@@ -142,7 +142,7 @@ func main() {
         fmt.Println("Adding new ID to story:", newStoryName)
 
         updateUrl := baseUrl + "stories/" + strconv.Itoa(pivotalId)
-        putData := &OutboundMessage{name:newStoryName}
+        putData := &OutboundMessage{Name: newStoryName}
         b, err := json.Marshal(putData)
         if err != nil {
             fmt.Println("[ERROR]:", err)
