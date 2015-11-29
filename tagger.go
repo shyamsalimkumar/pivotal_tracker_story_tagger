@@ -7,16 +7,32 @@ import (
     "encoding/json"
     "sort"
     "time"
-    "regexp"
     "strconv"
     "io"
-    "bytes"
+    "regexp"
 )
+
+type Label struct {
+    Id int `json:"id"`
+    ProjectId int `json:"project_id"`
+    Kind string `json:"kind"`
+    Name string `json:"name"`
+    CreatedAt time.Time `json:"created_at"`
+    UpdatedAt time.Time `json:"updated_at"`
+}
 
 type Message struct {
     Id int `json:"id"`
+    ProjectId int `json:"project_id"`
+    Kind string `json:"kind"`
     Name string `json:"name"`
     CreatedAt time.Time `json:"created_at"`
+    UpdatedAt time.Time `json:"updated_at"`
+    Estimate int `json:"estimate"`
+    StoryType string `json:"story_type"`
+    Description string `json:"description"`
+    Url string `json:"url"`
+    Labels []Label `json:"labels"`
 }
 
 type Messages []Message
@@ -44,7 +60,8 @@ func getPivotalTrackerEnvVariables() (projectId, apiToken, storyPrefix string) {
     return
 }
 
-func makeRequest(client *http.Client, url string, method string, apiToken string, data io.Reader) (contents []byte, err error) {
+func makeRequest(client *http.Client, url string, method string, apiToken string, data io.Reader) (contents []byte,
+    err error) {
     req, err := http.NewRequest(method, url, data)
     if err != nil {
         fmt.Println("[ERROR]:", err)
@@ -54,11 +71,11 @@ func makeRequest(client *http.Client, url string, method string, apiToken string
     req.Header.Set("X-TrackerToken", apiToken)
 
     res, err := client.Do(req)
-    defer res.Body.Close()
     if err != nil {
         fmt.Println("[ERROR]:", err)
         os.Exit(1)
     }
+    defer res.Body.Close()
 
     contents, err = ioutil.ReadAll(res.Body)
     if err != nil {
@@ -66,6 +83,16 @@ func makeRequest(client *http.Client, url string, method string, apiToken string
         os.Exit(1)
     }
     return
+}
+
+func getPrefix(prefixMap map[string]string, labels []Label) (string) {
+    for _, label := range labels {
+        fmt.Println("Checking", label, "in", prefixMap)
+        if label, ok := prefixMap[label.Name]; ok {
+            return label
+        }
+    }
+    return ""
 }
 
 func main() {
@@ -107,14 +134,37 @@ func main() {
     }
 
     sort.Sort(stories)
-    regex := "" + storyPrefix + "(\\d+)"
+
+    keyMap := make(map[string]string)
+    keyMap["CMN"] = "commons"
+    keyMap["SEN"] = "sensor endpoints"
+    keyMap["API"] = "api"
+    keyMap["SPK"] = "spark"
+    keyMap["WUI"] = "web ui"
+
+    maxSeenStoryIdMap := make(map[string]int) // defaults are 0 so no need for initialization :D
+
+    revKeyMap := make(map[string]string)
+    for key, value := range keyMap {
+        revKeyMap[value] = key
+    }
+
+//    Building regex
+    regex := "("
+    for key, _ := range keyMap {
+        regex += key + "|"
+    }
+    regex = regex[:len(regex) - 1] + ")-(\\d+):"
+
+    fmt.Println("Regex:", regex)
+
     re, err := regexp.Compile(regex)
     if err != nil {
         fmt.Println("[ERROR]:", err)
         os.Exit(1)
     }
 
-    var newlyTaggedStoryCount, maxSeenStoryId int
+    var newlyTaggedStoryCount int
 
     for _, story := range stories {
         pivotalId := story.Id
@@ -122,23 +172,29 @@ func main() {
 
         matches := re.FindStringSubmatch(storyName)
         if len(matches) > 0 {
-            stringyStoryId := matches[1]
+            matchedTag := matches[1]
+            stringyStoryId := matches[2]
             storyId, err := strconv.Atoi(stringyStoryId)
             if err != nil {
                 fmt.Println("[ERROR]:", err)
                 os.Exit(1)
             }
-            if maxSeenStoryId < storyId {
-                maxSeenStoryId = storyId
+            if maxSeenStoryIdMap[matchedTag] < storyId {
+                maxSeenStoryIdMap[matchedTag] = storyId
             }
             fmt.Println("Skipping story with existing ID:", storyName)
             continue
         }
 
+        label := getPrefix(revKeyMap, story.Labels)
+        if label == "" {
+            fmt.Println("[ERROR]:", "Could not match label to known keys")
+            continue
+        }
         newlyTaggedStoryCount += 1
-        maxSeenStoryId += 1
+        maxSeenStoryIdMap[label] += 1
 
-        newStoryName := storyPrefix + strconv.Itoa(maxSeenStoryId) +" - " + storyName
+        newStoryName := label + "-" + strconv.Itoa(maxSeenStoryIdMap[label]) +": " + storyName
         fmt.Println("Adding new ID to story:", newStoryName)
 
         updateUrl := baseUrl + "stories/" + strconv.Itoa(pivotalId)
@@ -148,13 +204,15 @@ func main() {
             fmt.Println("[ERROR]:", err)
             os.Exit(1)
         }
+        fmt.Println(updateUrl)
+        fmt.Println(string(b))
 
-        contents, err := makeRequest(client, updateUrl, "PUT", apiToken, bytes.NewBuffer(b))
-        if err != nil {
-            fmt.Println("[ERROR]:", err)
-            os.Exit(1)
-        }
-        fmt.Println(string(contents))
+//        contents, err := makeRequest(client, updateUrl, "PUT", apiToken, bytes.NewBuffer(b))
+//        if err != nil {
+//            fmt.Println("[ERROR]:", err)
+//            os.Exit(1)
+//        }
+//        fmt.Println(string(contents))
     }
 
     fmt.Printf("Tagged %d new stories out of %d total", newlyTaggedStoryCount, len(stories))
